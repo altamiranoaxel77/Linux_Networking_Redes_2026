@@ -1,0 +1,308 @@
+=====================================================================
+ GUÍA PRÁCTICA DE LINUX NETWORKING - UBUNTU 24.04.4 DESKTOP
+ Todos los comandos y scripts usados, en el orden en que se ejecutaron
+ VM: Ubunto_Networking (VirtualBox 7.0.20) - Host: Windows 11
+ Fecha: 03/11/2026
+=====================================================================
+
+Convenciones:
+  PS>   comando ejecutado en Windows PowerShell (host)
+  $     comando ejecutado en Ubuntu como usuario "ubuntu"
+  #     comando ejecutado en Ubuntu como root (después de sudo -i)
+
+---------------------------------------------------------------------
+ 1. CREAR / AJUSTAR LA MÁQUINA VIRTUAL (VirtualBox)
+---------------------------------------------------------------------
+PS> VBoxManage showvminfo "Ubunto_Networking"
+PS> VBoxManage showmediuminfo disk "C:\Users\Usuario\VirtualBox VMs\Ubunto_Networking\Ubunto_Networking.vdi"
+
+# La VM tenía 4 CPUs, 16 MB de vídeo y red NAT. Se ajustó a lo que pide la guía:
+PS> VBoxManage modifyvm "Ubunto_Networking" --cpus 2 --vram 128 --nic1 bridged --bridgeadapter1 "Intel(R) Wi-Fi 6E AX211 160MHz"
+PS> VBoxManage startvm "Ubunto_Networking" --type gui
+
+# (Ubuntu 24.04.4 ya estaba instalado: secciones 1 y 2 de la guía hechas previamente.
+#  Usuario: ubuntu. Equipo: ubuntu-VirtualBox. Disco 25 GB dinámico, 4096 MB de RAM.)
+
+---------------------------------------------------------------------
+ 3. PREPARAR LA MÁQUINA (Terminal de GNOME, Ctrl+Alt+T)
+---------------------------------------------------------------------
+$ sudo -i
+# apt update
+# apt install iproute2 nftables tcpdump traceroute nmap iperf3 time python3 iputils-ping openssh-server
+    (¿Desea continuar? [S/n] -> S ; "¿Ejecutar Iperf3 como demonio?" -> No)
+# grep PRETTY_NAME /etc/os-release
+# uname -r
+# free -m
+# nproc
+# df -h /
+
+---------------------------------------------------------------------
+ 4. CONECTARSE POR SSH DESDE WINDOWS Y PASAR LOS SCRIPTS
+---------------------------------------------------------------------
+# hostname -I
+# ss -tln | grep :22
+
+PS> ssh ubuntu@192.168.1.107
+PS> cd "C:\Facultad\Redes de datos\investigacion\scripts"
+PS> scp armar_topologia.sh limpiar.sh ubuntu@192.168.1.107:/home/ubuntu/
+
+$ sudo -i
+# cd /home/ubuntu
+# ls
+# sed -i 's/\r$//' armar_topologia.sh limpiar.sh
+# file armar_topologia.sh limpiar.sh
+
+---------------------------------------------------------------------
+ 5. PARTE PRÁCTICA
+---------------------------------------------------------------------
+
+## Informe 4.1 y 4.2: armar y verificar la topología
+# bash armar_topologia.sh
+# ip netns list
+# ip netns exec pc1 ip addr show
+# ip netns exec r1 ip addr show
+# ip netns exec pc3 ip addr show
+# bash armar_topologia.sh          (prueba: ya armada -> "File exists")
+
+## Informe 4.3, Experimento 1: tiempo y memoria del armado (5 repeticiones)
+# bash limpiar.sh
+# free -m
+# time bash armar_topologia.sh
+# free -m
+# time bash limpiar.sh
+    (el ciclo se repitió 5 veces; al final:)
+# bash armar_topologia.sh
+
+## Informe 4.4, Experimento 2: conectividad, enrutamiento y latencia
+# --- a) Misma red y otra red sin rutas
+# ip netns exec pc1 ping -c 20 192.168.1.11
+# ip netns exec pc1 ping -c 4 192.168.2.10
+# ip netns exec pc1 ip route show
+
+# --- b) Rutas por defecto, con el reenvío todavía desactivado
+# ip netns exec pc1 ip route add default via 192.168.1.1
+# ip netns exec pc2 ip route add default via 192.168.1.1
+# ip netns exec pc3 ip route add default via 192.168.2.1
+# ip netns exec pc4 ip route add default via 192.168.2.1
+# ip netns exec pc1 ip route show
+# ip netns exec r1 sysctl net.ipv4.ip_forward
+# ip netns exec pc1 ping -c 4 192.168.2.10
+
+# --- c) Reenvío activado y traceroute
+# ip netns exec r1 sysctl -w net.ipv4.ip_forward=1
+# ip netns exec pc1 ping -c 20 192.168.2.10       (repetido 5 veces)
+# ip netns exec pc1 traceroute -n 192.168.2.10
+
+## Informe 4.5: captura de tráfico con tcpdump (dos terminales)
+# Terminal 1:
+# ip netns exec r1 ip neigh flush all
+# ip netns exec r1 tcpdump -n -e -i r1-eth1 'icmp or arp'
+# Terminal 2:
+# ip netns exec pc1 ping -c 3 192.168.2.10
+# (Terminal 1: Ctrl + C)
+# Opcional, lo mismo en r1-eth0:
+# ip netns exec r1 ip neigh flush all
+# ip netns exec r1 tcpdump -n -e -i r1-eth0 'icmp or arp'
+# ip netns exec pc1 ping -c 3 192.168.2.10
+
+## Informe 4.6 a), Experimento 3: firewall que bloquea el ping de la red B
+# ip netns exec r1 nft add table inet filtro
+# ip netns exec r1 nft add chain inet filtro forward \
+    '{ type filter hook forward priority 0; policy accept; }'
+# ip netns exec r1 nft add rule inet filtro forward ip saddr 192.168.2.0/24 \
+    icmp type echo-request counter drop
+# ip netns exec r1 nft list ruleset
+# ip netns exec pc3 ping -c 4 192.168.1.10
+# ip netns exec pc1 ping -c 4 192.168.2.10
+# ip netns exec r1 nft list ruleset
+# ip netns exec r1 nft delete table inet filtro
+# ip netns exec pc3 ping -c 4 192.168.1.10
+
+## Informe 4.6 b), Experimento 3: escaneo de puertos con y sin firewall
+# for p in 80 81 82; do ip netns exec pc3 python3 -m http.server $p >/dev/null 2>&1 & done
+# ip netns exec pc3 ss -tln
+# ip netns exec pc1 nmap -Pn -p 1-1000 192.168.2.10
+# ip netns exec r1 nft add table inet filtro2
+# ip netns exec r1 nft add chain inet filtro2 forward \
+    '{ type filter hook forward priority 0; policy accept; }'
+# ip netns exec r1 nft add rule inet filtro2 forward ip saddr 192.168.1.0/24 \
+    tcp dport 81-82 counter drop
+# ip netns exec pc1 nmap -Pn -p 1-1000 192.168.2.10
+# ip netns exec r1 nft list ruleset
+# pkill -f http.server
+# ip netns exec r1 nft delete table inet filtro2
+
+## Informe 4.7, Experimento 4: velocidad del router según las reglas (5 veces cada caso)
+# ip netns exec pc3 iperf3 -s -D
+# ip netns exec pc1 iperf3 -c 192.168.2.10 -t 5                 (sin reglas, x5)
+# ip netns exec r1 nft add table inet carga
+# ip netns exec r1 nft add chain inet carga forward \
+    '{ type filter hook forward priority 0; policy accept; }'
+# for i in $(seq 1 10); do
+    ip netns exec r1 nft add rule inet carga forward ip saddr 10.99.0.$i drop
+  done
+# ip netns exec r1 nft list chain inet carga forward | grep -c drop   (verificación: 10)
+# ip netns exec pc1 iperf3 -c 192.168.2.10 -t 5                 (10 reglas, x5)
+# for i in $(seq 11 100); do
+    ip netns exec r1 nft add rule inet carga forward ip saddr 10.99.0.$i drop
+  done
+# ip netns exec r1 nft list chain inet carga forward | grep -c drop   (verificación: 100)
+# ip netns exec pc1 iperf3 -c 192.168.2.10 -t 5                 (100 reglas, x5)
+# ip netns exec r1 nft delete table inet carga
+# pkill iperf3
+
+## Informe 4.8, Experimento 5: estado de Ubuntu y configuración persistente
+# --- Parte A (solo lectura)
+# uname -r
+# dpkg-query -f '.\n' -W | wc -l
+# df -h /
+# free -m
+# ls /etc/netplan
+# cat /etc/netplan/*.yaml
+# cat /etc/resolv.conf
+# systemctl is-active NetworkManager systemd-networkd systemd-resolved
+# nmcli general status
+# ufw status
+# nft list ruleset
+# which sudo
+
+# --- Parte B (configuración persistente con NetworkManager)
+# time nmcli connection add type dummy ifname dummy0 con-name dummy0 ip4 10.10.10.1/24
+# nmcli connection show
+# ip -br addr show dummy0
+# ls -l /etc/NetworkManager/system-connections/
+# reboot
+    (volver a conectarse:)
+PS> ssh ubuntu@192.168.1.107
+$ sudo -i
+# cd /home/ubuntu
+# uptime
+# ip -br addr show dummy0
+# ls /etc/netplan
+# ip netns list
+# ls -l /etc/netplan
+# cat /etc/netplan/90-NM-*.yaml
+# nmcli connection delete dummy0
+# nmcli connection show
+# ls /etc/netplan
+
+---------------------------------------------------------------------
+ 8. AL TERMINAR
+---------------------------------------------------------------------
+# bash limpiar.sh
+# poweroff
+
+
+=====================================================================
+ COMANDOS AUXILIARES DE AUTOMATIZACIÓN (no forman parte de la guía)
+=====================================================================
+Para poder ejecutar y capturar cada paso automáticamente desde Windows se usó:
+
+# Clave SSH dedicada en Windows (sin contraseña):
+PS> ssh-keygen -q -t ed25519 -N "" -C "practica-redes" -f $env:USERPROFILE\.ssh\practica_ubuntu
+# En la terminal de root de la VM:
+# echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/99-practica && chmod 440 /etc/sudoers.d/99-practica
+# install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.ssh /home/ubuntu/pasos
+# echo '<clave pública practica_ubuntu.pub>' >> /home/ubuntu/.ssh/authorized_keys
+# Al final se borró el permiso temporal:
+# rm -f /etc/sudoers.d/99-practica /home/ubuntu/runner.sh; rm -rf /home/ubuntu/pasos
+
+# runner.sh: muestra cada comando con el prompt de root y lo ejecuta (bloques separados por "@@")
+#!/bin/bash
+exec 2>&1
+cd /home/ubuntu
+P="root@$(hostname):/home/ubuntu# "
+block=""
+show() {
+  local first=1
+  while IFS= read -r l; do
+    if [ $first = 1 ]; then printf '%s%s\n' "$P" "$l"; first=0; else printf '> %s\n' "$l"; fi
+  done <<< "$1"
+}
+run() { [ -z "$block" ] && return; show "$block"; eval "$block"; block=""; }
+while IFS= read -r -u 3 line || [ -n "$line" ]; do
+  if [ "$line" = "@@" ]; then run; else block+="${block:+$'\n'}$line"; fi
+done 3< "$1"
+run
+printf '%s\n' "$P"
+
+# Cada paso se lanzó desde Windows en una ventana real de PowerShell (conhost):
+PS> ssh -i $env:USERPROFILE\.ssh\practica_ubuntu ubuntu@192.168.1.107 "sudo bash /home/ubuntu/runner.sh /home/ubuntu/pasos/<paso>.cmds"
+# y la ventana se capturó con System.Drawing (CopyFromScreen) en capturas\<paso>.png.
+# Las capturas de la pantalla de la VM (secciones 1 a 3) se tomaron con:
+PS> VBoxManage controlvm "Ubunto_Networking" screenshotpng capturas\<archivo>.png
+# y los comandos de la sección 3 se tipearon en la VM con:
+PS> VBoxManage controlvm "Ubunto_Networking" keyboardputstring "<comando>"
+
+
+=====================================================================
+ SCRIPT: armar_topologia.sh
+=====================================================================
+#!/bin/bash
+# armar_topologia.sh - Arma la topologia de la practica con network namespaces
+#
+#   Red A 192.168.1.0/24                       Red B 192.168.2.0/24
+#   pc1 (.10) --+                                  +-- pc3 (.10)
+#               +-- sw1 (br0) -- r1 -- sw2 (br0) --+
+#   pc2 (.11) --+   r1-eth0 .1     r1-eth1 .1      +-- pc4 (.11)
+#
+# Sin rutas por defecto y con ip_forward=0 en r1 (se agregan en el experimento 2).
+# Si la topologia ya existe, falla con "File exists": ejecutar limpiar.sh antes.
+set -e
+
+# 1) Namespaces
+for ns in pc1 pc2 pc3 pc4 r1 sw1 sw2; do
+  ip netns add "$ns"
+  ip netns exec "$ns" ip link set lo up
+done
+
+# 2) Switches: un bridge por namespace de switch
+for sw in sw1 sw2; do
+  ip netns exec "$sw" ip link add br0 type bridge
+  ip netns exec "$sw" ip link set br0 up
+done
+
+# 3) Cables (pares veth): conectar <host> <interfaz> <switch> <puerto>
+conectar() {
+  local host=$1 ifz=$2 sw=$3 puerto=$4
+  ip link add "$ifz" type veth peer name "$puerto"
+  ip link set "$ifz" netns "$host"
+  ip link set "$puerto" netns "$sw"
+  ip netns exec "$sw" ip link set "$puerto" master br0
+  ip netns exec "$sw" ip link set "$puerto" up
+  ip netns exec "$host" ip link set "$ifz" up
+}
+
+conectar pc1 pc1-eth0 sw1 sw1-p1
+conectar pc2 pc2-eth0 sw1 sw1-p2
+conectar r1  r1-eth0  sw1 sw1-p3
+conectar pc3 pc3-eth0 sw2 sw2-p1
+conectar pc4 pc4-eth0 sw2 sw2-p2
+conectar r1  r1-eth1  sw2 sw2-p3
+
+# 4) Direcciones IP
+ip netns exec pc1 ip addr add 192.168.1.10/24 dev pc1-eth0
+ip netns exec pc2 ip addr add 192.168.1.11/24 dev pc2-eth0
+ip netns exec r1  ip addr add 192.168.1.1/24  dev r1-eth0
+ip netns exec r1  ip addr add 192.168.2.1/24  dev r1-eth1
+ip netns exec pc3 ip addr add 192.168.2.10/24 dev pc3-eth0
+ip netns exec pc4 ip addr add 192.168.2.11/24 dev pc4-eth0
+
+# 5) Reenvio desactivado en el router (se activa en el experimento 2)
+ip netns exec r1 sysctl -q -w net.ipv4.ip_forward=0
+
+echo "Topologia armada. Namespaces:"
+ip netns list
+
+
+=====================================================================
+ SCRIPT: limpiar.sh
+=====================================================================
+#!/bin/bash
+# limpiar.sh - Borra la topologia de la practica.
+# Al borrar un namespace se eliminan tambien sus interfaces veth y bridges.
+for ns in pc1 pc2 pc3 pc4 r1 sw1 sw2; do
+  ip netns del "$ns" 2>/dev/null
+done
+echo "Topologia eliminada. Namespaces restantes:"
+ip netns list
